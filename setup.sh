@@ -1,10 +1,10 @@
 #!/bin/bash
 
-# Install ffmpeg (optional but useful)
-apt-get update && apt-get install -y ffmpeg curl
+# Create bin directory inside the project
+mkdir -p ./bin
 
-# Download yt-dlp to /usr/local/bin
-curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp
+# Download yt-dlp binary locally
+curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o ./bin/yt-dlp
 
 # Make it executable
-chmod a+rx /usr/local/bin/yt-dlp
+chmod +x ./bin/yt-dlp
