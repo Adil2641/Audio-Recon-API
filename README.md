@@ -8,3 +8,4 @@ Give YT Video link and you get audio title
 # GUIDE🚀
 Browser Url: https://your-api.onrender.com/adil?url=YouTube-Link
 Example: https://https://audio-recon-api.onrender.com/adil?url=https://www.youtube.com/watch?v=0fB0gr_M7Pw&list=RDMM0fB0gr_M7Pw&index=1
+![Diagram](Image/image.png)
