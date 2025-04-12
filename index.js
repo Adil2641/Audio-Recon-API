@@ -12,7 +12,7 @@ const COOKIES = path.join(__dirname, "cookies.txt");
 
 app.use(cors());
 
-app.get("/kshitiz", (req, res) => {
+app.get("/adil", (req, res) => {
     const videoUrl = req.query.url;
     if (!videoUrl) {
         return res.status(400).json({ error: "Missing 'url' query parameter." });
