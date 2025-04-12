@@ -1,6 +1,6 @@
 const express = require("express");
-const ytdl = require("ytdl-core");
 const cors = require("cors");
+const { exec } = require("child_process");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -14,21 +14,23 @@ app.get("/kshitiz", async (req, res) => {
         return res.status(400).json({ error: "Missing 'url' query parameter." });
     }
 
-    try {
-        if (!ytdl.validateURL(videoUrl)) {
-            return res.status(400).json({ error: "Invalid YouTube URL." });
+    const cmd = `yt-dlp --skip-download --print "%(title)s" "${videoUrl}"`;
+
+    exec(cmd, (error, stdout, stderr) => {
+        if (error) {
+            console.error("Error executing yt-dlp:", stderr);
+            return res.status(500).json({ error: "Failed to fetch title." });
         }
 
-        const info = await ytdl.getBasicInfo(videoUrl);
-        const title = info.videoDetails.title;
-
+        const title = stdout.trim();
         return res.json({ title });
-    } catch (error) {
-        console.error("Error fetching video info:", error.message);
-        return res.status(500).json({ error: "Failed to fetch video title." });
-    }
+    });
+});
+
+app.get("/", (req, res) => {
+    res.send("🎵 YouTube Title API using yt-dlp is running.");
 });
 
 app.listen(PORT, () => {
-    console.log(`Server running on port ${PORT}`);
+    console.log(`Server is running on port ${PORT}`);
 });
