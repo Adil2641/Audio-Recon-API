@@ -10,135 +10,116 @@ const PORT = process.env.PORT || 3000;
 // Configuration
 const YT_DLP_PATH = path.join(__dirname, 'bin', 'yt-dlp');
 const COOKIES_PATH = path.join(__dirname, 'cookies.txt');
-const TIMEOUT_MS = 4000; // 4 second timeout
-const MAX_TITLE_LENGTH = 100; // Character limit for title
+const TIMEOUT_MS = 6000; // Increased to 6 seconds
+const RETRY_COUNT = 2; // Number of retry attempts
 
-// Middleware
-app.use(cors());
-app.use(express.json());
-
-// Verify yt-dlp exists and is executable
+// Verify yt-dlp exists
 if (!fs.existsSync(YT_DLP_PATH)) {
-  console.error('Error: yt-dlp binary not found at', YT_DLP_PATH);
+  console.error('yt-dlp binary missing!');
   process.exit(1);
 }
 
-// Verify cookies file exists if needed
-const USE_COOKIES = fs.existsSync(COOKIES_PATH);
-if (!USE_COOKIES) {
-  console.warn('Cookies file not found - restricted videos may fail');
-}
+app.use(cors());
 
-// Build yt-dlp command
-const buildCommand = (url) => {
+// Improved yt-dlp command with fallback options
+const buildCommand = (url, attempt = 1) => {
   let command = `"${YT_DLP_PATH}" \\
     --no-cache-dir \\
     --no-update \\
     --quiet \\
-    --socket-timeout 3 \\
+    --socket-timeout ${attempt * 2} \\ // Increase timeout with each attempt
     --force-ipv4 \\
     --skip-download \\
     --print "%(title)s"`;
 
-  if (USE_COOKIES) {
+  // Only use cookies on first attempt (might be slowing things down)
+  if (fs.existsSync(COOKIES_PATH) && attempt === 1) {
     command += ` --cookies "${COOKIES_PATH}"`;
+  }
+
+  // Fallback options for subsequent attempts
+  if (attempt > 1) {
+    command += ` --compat-options no-youtube-unavailable-videos`;
   }
 
   command += ` "${url}"`;
   return command;
 };
 
-// Main API endpoint
-app.get('/adil', (req, res) => {
+// Retry wrapper with timeout
+const fetchWithRetry = (url, attempt = 1) => {
+  return new Promise((resolve, reject) => {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => {
+      controller.abort();
+    }, TIMEOUT_MS);
+
+    const command = buildCommand(url, attempt);
+
+    exec(command, { signal: controller.signal }, (error, stdout, stderr) => {
+      clearTimeout(timeout);
+      
+      if (error) {
+        if (attempt < RETRY_COUNT) {
+          console.log(`Attempt ${attempt} failed, retrying...`);
+          resolve(fetchWithRetry(url, attempt + 1));
+        } else {
+          reject({
+            error: error,
+            stderr: stderr.toString(),
+            attempt: attempt
+          });
+        }
+      } else {
+        resolve(stdout.toString().trim());
+      }
+    });
+  });
+};
+
+// Main endpoint with retry logic
+app.get('/adil', async (req, res) => {
   const startTime = Date.now();
   const videoUrl = req.query.url;
 
-  if (!videoUrl) {
-    return res.status(400).json({ 
-      error: 'URL parameter is required',
-      example: '/adil?url=https://www.youtube.com/watch?v=VIDEO_ID'
-    });
+  if (!videoUrl || !videoUrl.includes('youtube.com')) {
+    return res.status(400).json({ error: 'Valid YouTube URL required' });
   }
 
-  const controller = new AbortController();
-  const timeout = setTimeout(() => {
-    controller.abort();
-  }, TIMEOUT_MS);
-
-  const command = buildCommand(videoUrl);
-
-  exec(command, { signal: controller.signal }, (error, stdout, stderr) => {
-    clearTimeout(timeout);
+  try {
+    const title = await fetchWithRetry(videoUrl);
     const responseTime = Date.now() - startTime;
-
-    if (error) {
-      console.error(`[${new Date().toISOString()}] Error in ${responseTime}ms:`, {
-        url: videoUrl,
-        error: error.message,
-        stderr: stderr.toString()
-      });
-
-      if (error.killed || error.signal) {
-        return res.status(504).json({
-          error: 'Request timeout',
-          message: 'YouTube took too long to respond',
-          responseTime: `${responseTime}ms`
-        });
-      }
-
-      return res.status(500).json({
-        error: 'Failed to fetch video title',
-        details: stderr.toString() || error.message,
-        responseTime: `${responseTime}ms`
-      });
-    }
-
-    const title = stdout.toString().trim().substring(0, MAX_TITLE_LENGTH);
-    console.log(`[${new Date().toISOString()}] Success in ${responseTime}ms:`, {
-      url: videoUrl,
-      title: title
-    });
-
+    
     res.json({
       title: title,
       responseTime: `${responseTime}ms`,
-      usedCookies: USE_COOKIES
+      attempts: title.includes('retry') ? 2 : 1
     });
-  });
+
+  } catch (error) {
+    const responseTime = Date.now() - startTime;
+    console.error(`Failed after ${error.attempt} attempts in ${responseTime}ms`);
+    
+    res.status(500).json({
+      error: 'Failed to fetch title',
+      details: error.stderr || error.error.message,
+      responseTime: `${responseTime}ms`,
+      attempts: error.attempt
+    });
+  }
 });
 
-// Health check endpoint
+// Health endpoint
 app.get('/', (req, res) => {
   res.json({
-    status: 'running',
-    service: 'YouTube Title API',
-    endpoints: {
-      getTitle: '/adil?url=YOUTUBE_URL'
-    },
+    status: 'ready',
     config: {
       timeout: `${TIMEOUT_MS}ms`,
-      ytDlpPath: YT_DLP_PATH,
-      cookiesEnabled: USE_COOKIES
+      retries: RETRY_COUNT
     }
   });
 });
 
-// Start server
 app.listen(PORT, () => {
-  console.log(`Server started on port ${PORT}`);
-  console.log('Configuration:', {
-    ytDlpPath: YT_DLP_PATH,
-    cookiesPath: COOKIES_PATH,
-    cookiesEnabled: USE_COOKIES,
-    timeout: TIMEOUT_MS
-  });
-
-  // Verify yt-dlp works
-  exec(`${YT_DLP_PATH} --version`, (error) => {
-    if (error) {
-      console.error('yt-dlp verification failed:', error.message);
-    } else {
-      console.log('yt-dlp verified and ready');
-    }
-  });
+  console.log(`Server running with ${TIMEOUT_MS}ms timeout`);
 });
