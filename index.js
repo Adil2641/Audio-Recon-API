@@ -3,7 +3,6 @@ const cors = require('cors');
 const { exec } = require('child_process');
 const path = require('path');
 const fs = require('fs');
-const axios = require('axios'); // Added for API fallback
 const util = require('util');
 
 const app = express();
@@ -12,7 +11,7 @@ const PORT = process.env.PORT || 3000;
 // Configuration
 const YT_DLP_PATH = path.join(__dirname, 'bin', 'yt-dlp');
 const COOKIES_PATH = path.join(__dirname, 'cookies.txt');
-const BASE_TIMEOUT = 10000; // Increased to 10 seconds
+const BASE_TIMEOUT = 10000; // 10 seconds
 const execPromise = util.promisify(exec);
 
 // Verify yt-dlp exists
@@ -47,11 +46,21 @@ const strategies = [
       const videoId = url.match(/(?:v=|\/)([a-zA-Z0-9_-]{11})/)?.[1];
       if (!videoId) throw new Error('Invalid YouTube URL');
       
-      const response = await axios.get(
-        `https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v=${videoId}&format=json`,
-        { timeout: 5000 }
-      );
-      return response.data.title;
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 5000);
+      
+      try {
+        const response = await fetch(
+          `https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v=${videoId}&format=json`,
+          { signal: controller.signal }
+        );
+        clearTimeout(timeout);
+        const data = await response.json();
+        return data.title;
+      } catch (error) {
+        clearTimeout(timeout);
+        throw error;
+      }
     },
     timeout: 5000
   }
@@ -130,7 +139,6 @@ app.get('/', (req, res) => {
   });
 });
 
-// Error handling middleware
 app.use((err, req, res, next) => {
   console.error('Server error:', err);
   res.status(500).json({ error: 'Internal server error' });
