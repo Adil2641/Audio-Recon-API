@@ -3,7 +3,6 @@ const cors = require("cors");
 const { exec } = require("child_process");
 const path = require("path");
 const { promisify } = require("util");
-const timeoutSignal = require('timeout-signal');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -17,11 +16,10 @@ const COOKIES = path.join(__dirname, "cookies.txt");
 app.use(cors());
 app.use(express.json());
 
-// Timeout configuration (3 seconds total, 2.8s for yt-dlp)
-const TOTAL_TIMEOUT = 3000;
-const YT_DLP_TIMEOUT = 2800;
+// Timeout configuration (3 seconds total)
+const YT_DLP_TIMEOUT = 2800; // 2.8 seconds for yt-dlp
 
-// Optimized yt-dlp command with fastest possible options
+// Optimized yt-dlp command
 const getTitleCommand = (url) => {
     return `"${YT_DLP}" \
         --no-cache-dir \
@@ -39,7 +37,7 @@ const getTitleCommand = (url) => {
         "${url}"`;
 };
 
-// Main endpoint with aggressive timeout handling
+// Main endpoint
 app.get("/adil", async (req, res) => {
     const startTime = Date.now();
     const videoUrl = req.query.url;
@@ -49,21 +47,18 @@ app.get("/adil", async (req, res) => {
     }
 
     try {
-        // Setup timeout control
-        const controller = new AbortController();
-        const timeout = setTimeout(() => {
-            controller.abort();
-        }, YT_DLP_TIMEOUT);
-
         const cmd = getTitleCommand(videoUrl);
         
-        // Execute with timeout
-        const { stdout } = await execPromise(cmd, { 
-            signal: controller.signal,
-            timeout: YT_DLP_TIMEOUT - 200 // Give 200ms buffer
+        // Execute with timeout using Promise.race
+        const timeoutPromise = new Promise((_, reject) => {
+            setTimeout(() => {
+                reject(new Error("YouTube title fetch timeout"));
+            }, YT_DLP_TIMEOUT);
         });
 
-        clearTimeout(timeout);
+        const execPromise = execPromise(cmd, { timeout: YT_DLP_TIMEOUT - 200 });
+        
+        const { stdout } = await Promise.race([execPromise, timeoutPromise]);
         
         const title = stdout.trim();
         const responseTime = Date.now() - startTime;
@@ -78,7 +73,7 @@ app.get("/adil", async (req, res) => {
     } catch (error) {
         console.error(`Error (${Date.now() - startTime}ms):`, error.message);
         
-        if (error.killed || error.signal) {
+        if (error.message.includes("timeout")) {
             return res.status(504).json({ 
                 error: "YouTube title fetch timeout",
                 response_time: Date.now() - startTime
