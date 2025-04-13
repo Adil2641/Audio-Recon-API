@@ -1,115 +1,144 @@
-const express = require("express");
-const cors = require("cors");
-const { exec } = require("child_process");
-const path = require("path");
-const { promisify } = require("util");
+const express = require('express');
+const cors = require('cors');
+const { exec } = require('child_process');
+const path = require('path');
+const fs = require('fs');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-const execute = promisify(exec); // Renamed to avoid conflict
 
-// Path configuration
-const YT_DLP = path.join(__dirname, "bin", "yt-dlp");
-const COOKIES = path.join(__dirname, "cookies.txt");
+// Configuration
+const YT_DLP_PATH = path.join(__dirname, 'bin', 'yt-dlp');
+const COOKIES_PATH = path.join(__dirname, 'cookies.txt');
+const TIMEOUT_MS = 4000; // 4 second timeout
+const MAX_TITLE_LENGTH = 100; // Character limit for title
 
 // Middleware
 app.use(cors());
 app.use(express.json());
 
-// Timeout configuration (3 seconds total)
-const YT_DLP_TIMEOUT = 2800; // 2.8 seconds for yt-dlp
+// Verify yt-dlp exists and is executable
+if (!fs.existsSync(YT_DLP_PATH)) {
+  console.error('Error: yt-dlp binary not found at', YT_DLP_PATH);
+  process.exit(1);
+}
 
-// Optimized yt-dlp command
-const getTitleCommand = (url) => {
-    return `"${YT_DLP}" \
-        --no-cache-dir \
-        --no-update \
-        --no-progress \
-        --no-warnings \
-        --quiet \
-        --socket-timeout 2 \
-        --compat-options no-youtube-unavailable-videos \
-        --force-ipv4 \
-        --throttled-rate 100K \
-        --cookies "${COOKIES}" \
-        --skip-download \
-        --print "%(title)s" \
-        "${url}"`;
+// Verify cookies file exists if needed
+const USE_COOKIES = fs.existsSync(COOKIES_PATH);
+if (!USE_COOKIES) {
+  console.warn('Cookies file not found - restricted videos may fail');
+}
+
+// Build yt-dlp command
+const buildCommand = (url) => {
+  let command = `"${YT_DLP_PATH}" \\
+    --no-cache-dir \\
+    --no-update \\
+    --quiet \\
+    --socket-timeout 3 \\
+    --force-ipv4 \\
+    --skip-download \\
+    --print "%(title)s"`;
+
+  if (USE_COOKIES) {
+    command += ` --cookies "${COOKIES_PATH}"`;
+  }
+
+  command += ` "${url}"`;
+  return command;
 };
 
-// Main endpoint
-app.get("/adil", async (req, res) => {
-    const startTime = Date.now();
-    const videoUrl = req.query.url;
-    
-    if (!videoUrl) {
-        return res.status(400).json({ error: "Missing URL parameter" });
+// Main API endpoint
+app.get('/adil', (req, res) => {
+  const startTime = Date.now();
+  const videoUrl = req.query.url;
+
+  if (!videoUrl) {
+    return res.status(400).json({ 
+      error: 'URL parameter is required',
+      example: '/adil?url=https://www.youtube.com/watch?v=VIDEO_ID'
+    });
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => {
+    controller.abort();
+  }, TIMEOUT_MS);
+
+  const command = buildCommand(videoUrl);
+
+  exec(command, { signal: controller.signal }, (error, stdout, stderr) => {
+    clearTimeout(timeout);
+    const responseTime = Date.now() - startTime;
+
+    if (error) {
+      console.error(`[${new Date().toISOString()}] Error in ${responseTime}ms:`, {
+        url: videoUrl,
+        error: error.message,
+        stderr: stderr.toString()
+      });
+
+      if (error.killed || error.signal) {
+        return res.status(504).json({
+          error: 'Request timeout',
+          message: 'YouTube took too long to respond',
+          responseTime: `${responseTime}ms`
+        });
+      }
+
+      return res.status(500).json({
+        error: 'Failed to fetch video title',
+        details: stderr.toString() || error.message,
+        responseTime: `${responseTime}ms`
+      });
     }
 
-    try {
-        const cmd = getTitleCommand(videoUrl);
-        
-        // Create timeout promise
-        const timeoutPromise = new Promise((_, reject) => {
-            setTimeout(() => {
-                reject(new Error("YouTube title fetch timeout"));
-            }, YT_DLP_TIMEOUT);
-        });
+    const title = stdout.toString().trim().substring(0, MAX_TITLE_LENGTH);
+    console.log(`[${new Date().toISOString()}] Success in ${responseTime}ms:`, {
+      url: videoUrl,
+      title: title
+    });
 
-        // Create execution promise
-        const executionPromise = execute(cmd, { 
-            timeout: YT_DLP_TIMEOUT - 200 // 200ms buffer
-        });
-
-        // Race between execution and timeout
-        const { stdout } = await Promise.race([
-            executionPromise,
-            timeoutPromise
-        ]);
-        
-        const title = stdout.trim();
-        const responseTime = Date.now() - startTime;
-        
-        console.log(`Success in ${responseTime}ms: ${title.substring(0, 30)}...`);
-        
-        return res.json({ 
-            title,
-            response_time: responseTime
-        });
-
-    } catch (error) {
-        console.error(`Error (${Date.now() - startTime}ms):`, error.message);
-        
-        if (error.message.includes("timeout")) {
-            return res.status(504).json({ 
-                error: "YouTube title fetch timeout",
-                response_time: Date.now() - startTime
-            });
-        }
-        
-        return res.status(500).json({ 
-            error: "Failed to fetch title",
-            details: error.message,
-            response_time: Date.now() - startTime
-        });
-    }
+    res.json({
+      title: title,
+      responseTime: `${responseTime}ms`,
+      usedCookies: USE_COOKIES
+    });
+  });
 });
 
-// Health endpoint
-app.get("/", (req, res) => {
-    res.send("⚡ Ultra-Fast YouTube Title API");
+// Health check endpoint
+app.get('/', (req, res) => {
+  res.json({
+    status: 'running',
+    service: 'YouTube Title API',
+    endpoints: {
+      getTitle: '/adil?url=YOUTUBE_URL'
+    },
+    config: {
+      timeout: `${TIMEOUT_MS}ms`,
+      ytDlpPath: YT_DLP_PATH,
+      cookiesEnabled: USE_COOKIES
+    }
+  });
 });
 
 // Start server
 app.listen(PORT, () => {
-    console.log(`Server running on port ${PORT}`);
-    
-    // Warm up yt-dlp
-    exec(`${YT_DLP} --version`, (error) => {
-        if (error) {
-            console.error("Warmup failed - check yt-dlp installation");
-        } else {
-            console.log("yt-dlp ready - maximum speed optimized");
-        }
-    });
+  console.log(`Server started on port ${PORT}`);
+  console.log('Configuration:', {
+    ytDlpPath: YT_DLP_PATH,
+    cookiesPath: COOKIES_PATH,
+    cookiesEnabled: USE_COOKIES,
+    timeout: TIMEOUT_MS
+  });
+
+  // Verify yt-dlp works
+  exec(`${YT_DLP_PATH} --version`, (error) => {
+    if (error) {
+      console.error('yt-dlp verification failed:', error.message);
+    } else {
+      console.log('yt-dlp verified and ready');
+    }
+  });
 });
