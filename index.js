@@ -81,12 +81,12 @@ app.get('/adil', async (req, res) => {
     return res.status(400).json({ error: 'Valid YouTube URL required' });
   }
 
-  // Check cache first
-  if (cache.has(videoUrl) {
-    const { title, timestamp } = cache.get(videoUrl);
-    if (Date.now() - timestamp < CACHE_TTL) {
+  // Check cache first - Fixed syntax error here
+  if (cache.has(videoUrl)) {
+    const cachedData = cache.get(videoUrl);
+    if (Date.now() - cachedData.timestamp < CACHE_TTL) {
       return res.json({ 
-        title: title,
+        title: cachedData.title,
         cached: true,
         responseTime: `${Date.now() - startTime}ms`
       });
