@@ -3,6 +3,7 @@ const cors = require('cors');
 const { exec } = require('child_process');
 const path = require('path');
 const fs = require('fs');
+const axios = require('axios'); // Added for API fallback
 const util = require('util');
 
 const app = express();
@@ -11,7 +12,7 @@ const PORT = process.env.PORT || 3000;
 // Configuration
 const YT_DLP_PATH = path.join(__dirname, 'bin', 'yt-dlp');
 const COOKIES_PATH = path.join(__dirname, 'cookies.txt');
-const BASE_TIMEOUT = 5000; // Base 5 second timeout
+const BASE_TIMEOUT = 10000; // Increased to 10 seconds
 const execPromise = util.promisify(exec);
 
 // Verify yt-dlp exists
@@ -25,50 +26,65 @@ app.use(cors());
 // Strategy configurations
 const strategies = [
   {
-    name: 'default',
-    flags: '--force-ipv4 --socket-timeout 3',
-    timeout: BASE_TIMEOUT,
-    useCookies: true
-  },
-  {
     name: 'fast',
-    flags: '--force-ipv4 --throttled-rate 2M --socket-timeout 2 --no-playlist',
-    timeout: BASE_TIMEOUT - 1000,
-    useCookies: false
+    command: (url) => `"${YT_DLP_PATH}" --force-ipv4 --socket-timeout 5 --throttled-rate 2M --no-playlist --skip-download --print "%(title)s" "${url}"`,
+    timeout: 5000
   },
   {
-    name: 'fallback',
-    flags: '--force-ipv4 --compat-options no-youtube-unavailable-videos --socket-timeout 4',
-    timeout: BASE_TIMEOUT + 2000,
-    useCookies: false
+    name: 'default',
+    command: (url) => {
+      let cmd = `"${YT_DLP_PATH}" --force-ipv4 --socket-timeout 8 --skip-download --print "%(title)s"`;
+      if (fs.existsSync(COOKIES_PATH)) {
+        cmd += ` --cookies "${COOKIES_PATH}"`;
+      }
+      return `${cmd} "${url}"`;
+    },
+    timeout: 8000
+  },
+  {
+    name: 'api-fallback',
+    handler: async (url) => {
+      const videoId = url.match(/(?:v=|\/)([a-zA-Z0-9_-]{11})/)?.[1];
+      if (!videoId) throw new Error('Invalid YouTube URL');
+      
+      const response = await axios.get(
+        `https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v=${videoId}&format=json`,
+        { timeout: 5000 }
+      );
+      return response.data.title;
+    },
+    timeout: 5000
   }
 ];
-
-const buildCommand = (url, strategy) => {
-  let command = `"${YT_DLP_PATH}" --no-cache-dir --no-update --quiet --skip-download --print "%(title)s"`;
-  command += ` ${strategy.flags}`;
-  
-  if (strategy.useCookies && fs.existsSync(COOKIES_PATH)) {
-    command += ` --cookies "${COOKIES_PATH}"`;
-  }
-
-  return `${command} "${url}"`;
-};
 
 const fetchTitle = async (url) => {
   const errors = [];
   
   for (const strategy of strategies) {
     try {
-      const command = buildCommand(url, strategy);
-      const { stdout } = await Promise.race([
-        execPromise(command, { timeout: strategy.timeout }),
-        new Promise((_, reject) => 
-          setTimeout(() => reject(new Error('Timeout exceeded')), strategy.timeout)
-        )
-      ]);
+      let title;
+      const startTime = Date.now();
       
-      return stdout.trim();
+      if (strategy.command) {
+        const { stdout } = await Promise.race([
+          execPromise(strategy.command(url), { timeout: strategy.timeout }),
+          new Promise((_, reject) => 
+            setTimeout(() => reject(new Error('Timeout exceeded')), strategy.timeout)
+          )
+        ]);
+        title = stdout.trim();
+      } else if (strategy.handler) {
+        title = await Promise.race([
+          strategy.handler(url),
+          new Promise((_, reject) => 
+            setTimeout(() => reject(new Error('Timeout exceeded')), strategy.timeout)
+          )
+        ]);
+      }
+
+      console.log(`Success with ${strategy.name} in ${Date.now() - startTime}ms`);
+      return title;
+      
     } catch (error) {
       errors.push({
         strategy: strategy.name,
@@ -85,7 +101,7 @@ app.get('/adil', async (req, res) => {
   const startTime = Date.now();
   const videoUrl = req.query.url;
 
-  if (!videoUrl || !videoUrl.includes('youtube.com')) {
+  if (!videoUrl || !/youtube\.com|youtu\.be/.test(videoUrl)) {
     return res.status(400).json({ error: 'Valid YouTube URL required' });
   }
 
@@ -112,6 +128,12 @@ app.get('/', (req, res) => {
     status: 'ready',
     strategies: strategies.map(s => s.name)
   });
+});
+
+// Error handling middleware
+app.use((err, req, res, next) => {
+  console.error('Server error:', err);
+  res.status(500).json({ error: 'Internal server error' });
 });
 
 app.listen(PORT, () => {
