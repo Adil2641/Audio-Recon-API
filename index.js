@@ -6,7 +6,7 @@ const { promisify } = require("util");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-const execPromise = promisify(exec);
+const execute = promisify(exec); // Renamed to avoid conflict
 
 // Path configuration
 const YT_DLP = path.join(__dirname, "bin", "yt-dlp");
@@ -49,16 +49,23 @@ app.get("/adil", async (req, res) => {
     try {
         const cmd = getTitleCommand(videoUrl);
         
-        // Execute with timeout using Promise.race
+        // Create timeout promise
         const timeoutPromise = new Promise((_, reject) => {
             setTimeout(() => {
                 reject(new Error("YouTube title fetch timeout"));
             }, YT_DLP_TIMEOUT);
         });
 
-        const execPromise = execPromise(cmd, { timeout: YT_DLP_TIMEOUT - 200 });
-        
-        const { stdout } = await Promise.race([execPromise, timeoutPromise]);
+        // Create execution promise
+        const executionPromise = execute(cmd, { 
+            timeout: YT_DLP_TIMEOUT - 200 // 200ms buffer
+        });
+
+        // Race between execution and timeout
+        const { stdout } = await Promise.race([
+            executionPromise,
+            timeoutPromise
+        ]);
         
         const title = stdout.trim();
         const responseTime = Date.now() - startTime;
