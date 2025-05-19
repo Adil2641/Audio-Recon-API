@@ -10,4 +10,4 @@ curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o bin/
 chmod +x bin/yt-dlp
 
 # Disable auto-updates
-export YTDL_NO_UPDATE=1
+#export YTDL_NO_UPDATE=1
